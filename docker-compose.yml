@@ -1,0 +1,21 @@
+# Full stack in containers: MongoDB (the open-source engine DocumentDB is compatible with) + the API.
+services:
+  mongo:
+    image: mongo:8.0
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping: 1})"]
+      interval: 5s
+      retries: 20
+  api:
+    build: ./api
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/loaner
+    ports: ["8080:8080"]
+    healthcheck:
+      # no curl in the JRE image: talk HTTP over bash's /dev/tcp
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080 && printf 'GET /actuator/health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 5s
+      retries: 30
+    depends_on:
+      mongo:
+        condition: service_healthy
