@@ -1,5 +1,5 @@
 {
   "concurrent_requests": 50,
   "atomic_conditional_update": {"bookings_created": 1, "conflicts": 49},
-  "naive_read_then_write": {"bookings_created_per_trial": [10, 11, 11, 12, 12]}
+  "naive_read_then_write": {"bookings_created_per_trial": [13, 12, 12, 11, 10]}
 }

@@ -20,7 +20,6 @@ import java.util.concurrent.Future;
 
 import java.security.KeyPairGenerator;
 import java.security.interfaces.RSAPrivateKey;
-import java.security.interfaces.RSAPublicKey;
 import java.util.Date;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -36,8 +35,6 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
@@ -56,6 +53,8 @@ class LoanApiTest {
     static final Instant NOW = Instant.parse("2027-06-15T12:00:00Z");
     static final JsonMapper JSON = JsonMapper.builder().build();
     static final HttpClient HTTP = HttpClient.newHttpClient();
+    static final String ISSUER = "https://idp.test";
+    static final String AUDIENCE = "loaner-api";
 
     static final java.security.KeyPair KEYS = rsa();
 
@@ -77,17 +76,19 @@ class LoanApiTest {
             return Clock.fixed(NOW, ZoneOffset.UTC);
         }
 
-        /** Tokens in these tests are signed with a key pair made for this test run. */
-        @Bean
-        JwtDecoder jwtDecoder() {
-            return NimbusJwtDecoder.withPublicKey((RSAPublicKey) KEYS.getPublic()).build();
-        }
     }
 
     static String token(String email, String... roles) {
+        return token("sub-" + email, email, true, ISSUER, AUDIENCE, roles);
+    }
+
+    static String token(String subject, String email, boolean verified, String issuer, String audience,
+                        String... roles) {
         try {
-            JWTClaimsSet claims = new JWTClaimsSet.Builder().subject(email).claim("email", email)
-                    .claim("roles", List.of(roles)).expirationTime(new Date(System.currentTimeMillis() + 600_000)).build();
+            JWTClaimsSet.Builder b = new JWTClaimsSet.Builder().subject(subject).issuer(issuer).audience(audience)
+                    .claim("roles", List.of(roles)).expirationTime(new Date(System.currentTimeMillis() + 600_000));
+            if (email != null) b.claim("email", email).claim("email_verified", verified);
+            JWTClaimsSet claims = b.build();
             SignedJWT jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.RS256), claims);
             jwt.sign(new RSASSASigner((RSAPrivateKey) KEYS.getPrivate()));
             return jwt.serialize();
@@ -99,11 +100,19 @@ class LoanApiTest {
     static final String ADMIN = token("desk@example.com", "ADMIN");
     static final String ANA = token("ana@example.com");
     static final String BEN = token("ben@example.com");
-    static final String REMINDER = token("reminder@service", "REMINDER_SERVICE");
+    static final String REMINDER = token("reminder-client", null, false, ISSUER, AUDIENCE, "REMINDER_SERVICE");
 
+    /** The same properties production uses: a verification key, the expected issuer and this API's audience. */
     @DynamicPropertySource
-    static void mongo(DynamicPropertyRegistry r) {
+    static void config(DynamicPropertyRegistry r) throws Exception {
         r.add("spring.mongodb.uri", () -> EmbeddedMongo.uri("loaner-test"));
+        Path pem = Files.createTempFile("loaner-test-key", ".pem");
+        Files.writeString(pem, "-----BEGIN PUBLIC KEY-----\n"
+                + java.util.Base64.getMimeEncoder(64, "\n".getBytes()).encodeToString(KEYS.getPublic().getEncoded())
+                + "\n-----END PUBLIC KEY-----\n");
+        r.add("loaner.auth.public-key", () -> "file:" + pem);
+        r.add("loaner.auth.issuer", () -> ISSUER);
+        r.add("loaner.auth.audience", () -> AUDIENCE);
     }
 
     @LocalServerPort int port;
@@ -205,7 +214,7 @@ class LoanApiTest {
     void overdue_lists_checked_out_loans_past_their_end() throws Exception {
         String id = device("DK-007");
         // a loan that started yesterday and ended an hour ago, still checked out
-        Reservation late = new Reservation(UUID.randomUUID().toString(), "sam@example.com",
+        Reservation late = new Reservation(UUID.randomUUID().toString(), "sub-sam", "sam@example.com",
                 NOW.minusSeconds(86400), NOW.minusSeconds(3 * 3600), Reservation.State.CHECKED_OUT, NOW.minusSeconds(86400), null);
         mongo.updateFirst(Query.query(org.springframework.data.mongodb.core.query.Criteria.where("_id").is(id)),
                 new Update().push("reservations", late), Device.class);
@@ -260,6 +269,33 @@ class LoanApiTest {
         assertThat(call("GET", "/api/devices", null, null).status()).isEqualTo(401);
         assertThat(call("GET", "/api/devices", null, "not.a.jwt").status()).isEqualTo(401);
         assertThat(call("GET", "/actuator/health", null, null).status()).isEqualTo(200);
+    }
+
+    @Test
+    void tokens_from_another_issuer_or_for_another_app_are_rejected() throws Exception {
+        assertThat(call("GET", "/api/devices", null, ANA).status()).isEqualTo(200);
+        assertThat(call("GET", "/api/devices", null,
+                token("sub-ana", "ana@example.com", true, "https://evil.test", AUDIENCE)).status()).isEqualTo(401);
+        assertThat(call("GET", "/api/devices", null,
+                token("sub-ana", "ana@example.com", true, ISSUER, "some-other-app")).status()).isEqualTo(401);
+    }
+
+    @Test
+    void tokens_with_an_unverified_email_are_rejected() throws Exception {
+        assertThat(call("GET", "/api/devices", null,
+                token("sub-eve", "ana@example.com", false, ISSUER, AUDIENCE)).status()).isEqualTo(401);
+    }
+
+    @Test
+    void ownership_follows_the_account_not_the_email_address() throws Exception {
+        String id = device("DK-204");
+        String rid = reserve(id, "2027-06-16T09:00:00Z", "2027-06-17T09:00:00Z").body().get("id").asString();
+        // a different account that has (or later receives) the same email address is not the owner
+        String sameEmailOtherAccount = token("sub-someone-else", "ana@example.com", true, ISSUER, AUDIENCE);
+        assertThat(call("DELETE", "/api/devices/" + id + "/reservations/" + rid, null, sameEmailOtherAccount).status())
+                .isEqualTo(403);
+        assertThat(call("GET", "/api/devices/" + id, null, sameEmailOtherAccount).body()
+                .get("reservations").get(0).get("mine").asBoolean()).isFalse();
     }
 
     @Test
@@ -324,7 +360,7 @@ class LoanApiTest {
                 Device d = mongo.findById(deviceId, Device.class);
                 boolean free = d.reservations().stream().noneMatch(r -> r.active() && r.overlaps(s, e));
                 if (free) {
-                    Reservation r = new Reservation(UUID.randomUUID().toString(), "x@example.com", s, e,
+                    Reservation r = new Reservation(UUID.randomUUID().toString(), "sub-x", "x@example.com", s, e,
                             Reservation.State.BOOKED, null, null);
                     mongo.updateFirst(Query.query(org.springframework.data.mongodb.core.query.Criteria.where("_id").is(deviceId)),
                             new Update().push("reservations", r), Device.class);

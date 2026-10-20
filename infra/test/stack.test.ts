@@ -20,7 +20,7 @@ test('the API runs on Fargate with secrets injected, not plain environment value
   const envNames = container.Environment.map((e: { Name: string }) => e.Name)
   assert.ok(!envNames.includes('DOCDB_PASSWORD'))
   assert.ok(envNames.includes('SPRING_PROFILES_ACTIVE'))
-  assert.ok(envNames.includes('OIDC_JWKS_URI'))
+  for (const name of ['OIDC_JWKS_URI', 'OIDC_ISSUER', 'OIDC_AUDIENCE']) assert.ok(envNames.includes(name), name)
 })
 
 test('only the API service can reach the database port', () => {

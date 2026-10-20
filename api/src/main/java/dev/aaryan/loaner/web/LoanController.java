@@ -59,7 +59,7 @@ public class LoanController {
     @ResponseStatus(HttpStatus.CREATED)
     public Reservation reserve(@PathVariable String id, @Valid @RequestBody NewReservation r,
                                JwtAuthenticationToken auth) {
-        return loans.reserve(id, Caller.of(auth).email(), r.start(), r.end());
+        return loans.reserve(id, Caller.of(auth), r.start(), r.end());
     }
 
     @PostMapping("/devices/{id}/reservations/{rid}/checkout")

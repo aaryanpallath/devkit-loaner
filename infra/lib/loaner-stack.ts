@@ -21,7 +21,8 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
  * Lambda inside the VPC on a daily EventBridge schedule, and the React app on S3 + CloudFront, which reaches the
  * internal ALB for /api/* through a CloudFront VPC origin. Nothing but CloudFront is reachable from the internet.
  *
- * Deploy-time setting: -c oidcJwksUri=<company IdP JWKS URL>, used to verify sign-in tokens.
+ * Deploy-time settings for sign-in tokens: -c oidcJwksUri=<IdP JWKS URL> -c oidcIssuer=<IdP issuer>
+ * -c oidcAudience=<this API's client id / audience>.
  */
 export class LoanerStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
@@ -39,7 +40,10 @@ export class LoanerStack extends Stack {
       removalPolicy: RemovalPolicy.SNAPSHOT,
     })
 
-    const jwksUri: string = this.node.tryGetContext('oidcJwksUri') ?? 'https://login.example.com/.well-known/jwks.json'
+    const ctx = (key: string, fallback: string): string => this.node.tryGetContext(key) ?? fallback
+    const jwksUri = ctx('oidcJwksUri', 'https://login.example.com/.well-known/jwks.json')
+    const issuer = ctx('oidcIssuer', 'https://login.example.com')
+    const audience = ctx('oidcAudience', 'loaner-api')
 
     const cluster = new ecs.Cluster(this, 'Cluster', { vpc, containerInsightsV2: ecs.ContainerInsights.ENABLED })
     const api = new patterns.ApplicationLoadBalancedFargateService(this, 'Api', {
@@ -56,6 +60,8 @@ export class LoanerStack extends Stack {
           // the "aws" Spring profile builds the DocumentDB connection string from these (application-aws.properties)
           SPRING_PROFILES_ACTIVE: 'aws',
           OIDC_JWKS_URI: jwksUri,
+          OIDC_ISSUER: issuer,
+          OIDC_AUDIENCE: audience,
           DOCDB_HOST: db.clusterEndpoint.hostname,
           DOCDB_PORT: db.clusterEndpoint.portAsString(),
         },

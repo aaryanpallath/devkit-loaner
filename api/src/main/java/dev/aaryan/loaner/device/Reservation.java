@@ -4,7 +4,8 @@ import java.time.Instant;
 
 public record Reservation(
         String id,
-        String borrower,
+        String borrowerId,          // the token's immutable subject: used for ownership
+        String borrower,            // email, for display and reminders only
         Instant start,
         Instant end,
         State state,

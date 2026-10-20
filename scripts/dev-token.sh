@@ -11,7 +11,9 @@ roles=""
 for r in "$@"; do roles+="${roles:+,}\"$r\""; done
 now=$(date +%s)
 header=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
-payload=$(printf '{"sub":"%s","email":"%s","roles":[%s],"iat":%d,"exp":%d}' \
-  "$email" "$email" "$roles" "$now" "$((now + 3600))" | b64url)
+# issuer and audience must match application-local.properties; sub is a stable id derived from the email for dev
+sub="dev-$(printf '%s' "$email" | openssl dgst -sha256 | awk '{print substr($NF,1,16)}')"
+payload=$(printf '{"iss":"https://dev-idp.local","aud":"loaner-api","sub":"%s","email":"%s","email_verified":true,"roles":[%s],"iat":%d,"exp":%d}' \
+  "$sub" "$email" "$roles" "$now" "$((now + 3600))" | b64url)
 sig=$(printf '%s.%s' "$header" "$payload" | openssl dgst -sha256 -sign "$key" | b64url)
 printf '%s.%s.%s\n' "$header" "$payload" "$sig"

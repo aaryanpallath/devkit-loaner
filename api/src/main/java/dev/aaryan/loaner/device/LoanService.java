@@ -52,9 +52,10 @@ public class LoanService {
      * Books a slot atomically: the update only matches if the device exists, is not retired, and has no active
      * reservation overlapping [start, end). A non-match is then classified as 404 or 409.
      */
-    public Reservation reserve(String deviceId, String borrower, Instant start, Instant end) {
+    public Reservation reserve(String deviceId, dev.aaryan.loaner.security.Caller caller, Instant start, Instant end) {
         validateWindow(start, end);
-        Reservation r = new Reservation(UUID.randomUUID().toString(), borrower, start, end, State.BOOKED, null, null);
+        Reservation r = new Reservation(UUID.randomUUID().toString(), caller.subject(), caller.email(), start, end,
+                State.BOOKED, null, null);
         Query q = Query.query(where("_id").is(deviceId).and("retired").is(false)
                 .and("reservations").not().elemMatch(overlapping(start, end)));
         if (mongo.updateFirst(q, new Update().push("reservations", r), Device.class).getModifiedCount() == 1) {
@@ -76,7 +77,7 @@ public class LoanService {
     /** Borrowers may cancel only their own bookings; the IT desk may cancel any. */
     public Reservation cancel(String deviceId, String reservationId, dev.aaryan.loaner.security.Caller caller) {
         Reservation r = find(get(deviceId), reservationId);
-        if (!caller.admin() && !r.borrower().equalsIgnoreCase(caller.email())) {
+        if (!caller.admin() && !r.borrowerId().equals(caller.subject())) {
             throw new Forbidden("you can only cancel your own bookings");
         }
         return transition(deviceId, reservationId, State.BOOKED, State.CANCELLED, null);

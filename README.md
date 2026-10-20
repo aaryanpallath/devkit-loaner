@@ -10,7 +10,7 @@ tokens, a **React + TypeScript** frontend, **MongoDB** (API-compatible with **AW
 
 | Part | Stack | Tests |
 |---|---|---|
-| `api/` | Java 21, Spring Boot 4, Spring Security (OAuth2 JWT), Spring Data MongoDB | 13 integration tests against a real embedded MongoDB, incl. security rules and a 50-request concurrency test |
+| `api/` | Java 21, Spring Boot 4, Spring Security (OAuth2 JWT), Spring Data MongoDB | 16 integration tests against a real embedded MongoDB, incl. security rules and a 50-request concurrency test |
 | `web/` | React 19, TypeScript, Vite | 5 component tests (Vitest, Testing Library) |
 | `lambda/` | Python 3.12 AWS Lambda (daily overdue reminders) | 4 unit tests |
 | `infra/` | AWS CDK (TypeScript): ECS Fargate, internal ALB, DocumentDB, Lambda + EventBridge, S3 + CloudFront | 6 template assertions; `cdk synth` in CI |
@@ -32,8 +32,12 @@ From `results/concurrency.json`, 50 simultaneous requests for the same slot:
 
 ## Security
 
-- **Sign-in:** every API call needs a JWT from the company identity provider; the API verifies it with the IdP's
-  published keys (JWKS). The borrower is taken from the token, never from the request body.
+- **Sign-in:** every API call needs a JWT from the company identity provider. The API verifies its signature (the
+  IdP's published keys), expiry, **issuer**, and **audience**, so a token minted for another application is refused,
+  and a token that carries an email must mark it verified.
+- **Identity:** ownership is keyed on the token's immutable subject (`sub`), not the email address, which can change
+  or be reassigned; the email is kept for display and reminders. The borrower always comes from the token, never
+  from the request body.
 - **Roles** (token `roles` claim): `ADMIN` (IT desk) creates devices and checks loans out and in; `REMINDER_SERVICE`
   (the Lambda) and `ADMIN` read the overdue report; borrowers book and cancel only their own bookings.
 - **Privacy:** listings show other people's bookings as anonymous time slots; a borrower's email is visible only to
@@ -73,7 +77,8 @@ Tests: `cd api && ./mvnw test` · `cd web && npm test` · `cd lambda && pytest` 
 ECS Fargate (2 tasks, health-checked on `/actuator/health`, circuit breaker with rollback) behind an internal ALB;
 DocumentDB (encrypted, password in Secrets Manager, injected as container secrets) in private subnets; Python Lambda
 on a daily EventBridge schedule inside the VPC; S3 + CloudFront for the React app, with `/api/*` routed to the ALB
-through a CloudFront VPC origin. Deploy with `cdk deploy -c oidcJwksUri=<company IdP JWKS URL>`.
+through a CloudFront VPC origin. Deploy with
+`cdk deploy -c oidcJwksUri=<IdP JWKS URL> -c oidcIssuer=<IdP issuer> -c oidcAudience=<API audience>`.
 
 ## Design decisions
 

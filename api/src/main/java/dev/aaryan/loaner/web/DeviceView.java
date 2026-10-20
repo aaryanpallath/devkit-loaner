@@ -20,7 +20,7 @@ public record DeviceView(String id, String assetTag, String name, Device.Kind ki
     static DeviceView of(Device d, Caller c) {
         return new DeviceView(d.id(), d.assetTag(), d.name(), d.kind(), d.location(),
                 d.reservations().stream().filter(Reservation::active).map(r -> {
-                    boolean mine = r.borrower().equalsIgnoreCase(c.email());
+                    boolean mine = r.borrowerId().equals(c.subject());
                     return new Slot(mine || c.admin() ? r.id() : null, r.start(), r.end(), r.state(), mine,
                             mine || c.admin() ? r.borrower() : null);
                 }).toList());
