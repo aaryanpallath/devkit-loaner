@@ -1,7 +1,8 @@
 # Full stack in containers: MongoDB (the open-source engine DocumentDB is compatible with) + the API.
 services:
   mongo:
-    image: mongo:8.0
+    # pinned: newer 8.0 images refuse to start on Linux kernel 6.19+ (MongoDB SERVER-121912); 8.0.5 matches the tests
+    image: mongo:8.0.5
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping: 1})"]
       interval: 5s
