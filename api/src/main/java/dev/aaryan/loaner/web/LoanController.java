@@ -9,11 +9,13 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+
 import dev.aaryan.loaner.device.Device;
 import dev.aaryan.loaner.device.LoanService;
 import dev.aaryan.loaner.device.Reservation;
+import dev.aaryan.loaner.security.Caller;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
@@ -30,30 +32,34 @@ public class LoanController {
     public record NewDevice(@NotBlank String assetTag, @NotBlank String name, @NotNull Device.Kind kind,
                             @NotBlank String location) {}
 
-    public record NewReservation(@NotBlank @Email String borrower, @NotNull Instant start, @NotNull Instant end) {}
+    /** The borrower is the authenticated caller; it is not accepted from the request body. */
+    public record NewReservation(@NotNull Instant start, @NotNull Instant end) {}
 
     @GetMapping("/devices")
-    public List<Device> devices(@RequestParam(required = false) Device.Kind kind,
-                                @RequestParam(required = false) Instant from,
-                                @RequestParam(required = false) Instant to) {
-        return loans.list(kind, from, to);
+    public List<DeviceView> devices(@RequestParam(required = false) Device.Kind kind,
+                                    @RequestParam(required = false) Instant from,
+                                    @RequestParam(required = false) Instant to, JwtAuthenticationToken auth) {
+        Caller c = Caller.of(auth);
+        return loans.list(kind, from, to).stream().map(d -> DeviceView.of(d, c)).toList();
     }
 
     @PostMapping("/devices")
     @ResponseStatus(HttpStatus.CREATED)
-    public Device create(@Valid @RequestBody NewDevice d) {
-        return loans.create(new Device(null, d.assetTag(), d.name(), d.kind(), d.location(), false, null));
+    public DeviceView create(@Valid @RequestBody NewDevice d, JwtAuthenticationToken auth) {
+        return DeviceView.of(loans.create(new Device(null, d.assetTag(), d.name(), d.kind(), d.location(), false, null)),
+                Caller.of(auth));
     }
 
     @GetMapping("/devices/{id}")
-    public Device device(@PathVariable String id) {
-        return loans.get(id);
+    public DeviceView device(@PathVariable String id, JwtAuthenticationToken auth) {
+        return DeviceView.of(loans.get(id), Caller.of(auth));
     }
 
     @PostMapping("/devices/{id}/reservations")
     @ResponseStatus(HttpStatus.CREATED)
-    public Reservation reserve(@PathVariable String id, @Valid @RequestBody NewReservation r) {
-        return loans.reserve(id, r.borrower(), r.start(), r.end());
+    public Reservation reserve(@PathVariable String id, @Valid @RequestBody NewReservation r,
+                               JwtAuthenticationToken auth) {
+        return loans.reserve(id, Caller.of(auth).email(), r.start(), r.end());
     }
 
     @PostMapping("/devices/{id}/reservations/{rid}/checkout")
@@ -67,8 +73,8 @@ public class LoanController {
     }
 
     @DeleteMapping("/devices/{id}/reservations/{rid}")
-    public Reservation cancel(@PathVariable String id, @PathVariable String rid) {
-        return loans.cancel(id, rid);
+    public Reservation cancel(@PathVariable String id, @PathVariable String rid, JwtAuthenticationToken auth) {
+        return loans.cancel(id, rid, Caller.of(auth));
     }
 
     @GetMapping("/reservations/overdue")
@@ -84,6 +90,11 @@ public class LoanController {
     @ExceptionHandler(LoanService.Conflict.class)
     ResponseEntity<ProblemDetail> conflict(RuntimeException e) {
         return problem(HttpStatus.CONFLICT, e);
+    }
+
+    @ExceptionHandler(LoanService.Forbidden.class)
+    ResponseEntity<ProblemDetail> forbidden(RuntimeException e) {
+        return problem(HttpStatus.FORBIDDEN, e);
     }
 
     @ExceptionHandler(LoanService.BadRequest.class)

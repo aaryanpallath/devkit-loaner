@@ -8,7 +8,7 @@ const template = Template.fromStack(new LoanerStack(new App(), 'Test', { env: { 
 
 test('DocumentDB is encrypted and its password lives in Secrets Manager', () => {
   template.hasResourceProperties('AWS::DocDB::DBCluster', { StorageEncrypted: true })
-  template.resourceCountIs('AWS::SecretsManager::Secret', 1)
+  template.resourceCountIs('AWS::SecretsManager::Secret', 2)    // DocumentDB master + reminder service token
 })
 
 test('the API runs on Fargate with secrets injected, not plain environment values', () => {
@@ -20,6 +20,7 @@ test('the API runs on Fargate with secrets injected, not plain environment value
   const envNames = container.Environment.map((e: { Name: string }) => e.Name)
   assert.ok(!envNames.includes('DOCDB_PASSWORD'))
   assert.ok(envNames.includes('SPRING_PROFILES_ACTIVE'))
+  assert.ok(envNames.includes('OIDC_JWKS_URI'))
 })
 
 test('only the API service can reach the database port', () => {
@@ -32,10 +33,24 @@ test('only the API service can reach the database port', () => {
   assert.equal(rules[0].CidrIp, undefined)                          // never open to an address range
 })
 
-test('the reminder Lambda runs daily and knows the API URL', () => {
+test('the load balancer is internal and not open to the internet', () => {
+  template.hasResourceProperties('AWS::ElasticLoadBalancingV2::LoadBalancer', { Scheme: 'internal' })
+  // every inbound rule, whether inline on a security group or a separate ingress resource
+  const inbound = [
+    ...Object.values(template.findResources('AWS::EC2::SecurityGroup'))
+      .flatMap((g) => g.Properties.SecurityGroupIngress ?? []),
+    ...Object.values(template.findResources('AWS::EC2::SecurityGroupIngress')).map((r) => r.Properties),
+  ]
+  assert.ok(inbound.length > 0)
+  assert.ok(inbound.every((r) => r.CidrIp !== '0.0.0.0/0' && r.CidrIpv6 !== '::/0'), JSON.stringify(inbound))
+  template.resourceCountIs('AWS::CloudFront::VpcOrigin', 1)
+})
+
+test('the reminder Lambda runs daily inside the VPC with its token in Secrets Manager', () => {
   template.hasResourceProperties('AWS::Lambda::Function', {
     Runtime: 'python3.12', Handler: 'overdue_reminder.handler.handler',
-    Environment: { Variables: { API_URL: Match.anyValue() } },
+    VpcConfig: Match.objectLike({ SubnetIds: Match.anyValue() }),
+    Environment: { Variables: { API_URL: Match.anyValue(), TOKEN_SECRET_ARN: Match.anyValue() } },
   })
   template.hasResourceProperties('AWS::Events::Rule', { ScheduleExpression: 'cron(0 16 * * ? *)' })
 })

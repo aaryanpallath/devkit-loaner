@@ -42,6 +42,7 @@ jobs:
     needs: [api]
     steps:
       - uses: actions/checkout@v4
+      - run: scripts/dev-keys.sh
       - run: docker compose up -d --build --wait --wait-timeout 300
       - run: scripts/smoke.sh http://localhost:8080
       - if: failure()

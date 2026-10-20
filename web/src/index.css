@@ -14,3 +14,5 @@ button { background: var(--accent); color: #fff; border: none; cursor: pointer; 
 .error { color: var(--accent); }
 table { width: 100%; border-collapse: collapse; background: #fff; }
 th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); }
+textarea { font: 12px ui-monospace, monospace; width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+button.link { background: none; color: var(--muted); padding: 0; text-decoration: underline; }

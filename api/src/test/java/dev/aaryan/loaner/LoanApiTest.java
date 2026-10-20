@@ -18,6 +18,11 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
+import java.security.KeyPairGenerator;
+import java.security.interfaces.RSAPrivateKey;
+import java.security.interfaces.RSAPublicKey;
+import java.util.Date;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,6 +36,14 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.crypto.RSASSASigner;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 
 import dev.aaryan.loaner.device.Device;
 import dev.aaryan.loaner.device.Reservation;
@@ -44,14 +57,49 @@ class LoanApiTest {
     static final JsonMapper JSON = JsonMapper.builder().build();
     static final HttpClient HTTP = HttpClient.newHttpClient();
 
+    static final java.security.KeyPair KEYS = rsa();
+
+    static java.security.KeyPair rsa() {
+        try {
+            KeyPairGenerator g = KeyPairGenerator.getInstance("RSA");
+            g.initialize(2048);
+            return g.generateKeyPair();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     @TestConfiguration
-    static class FixedClock {
+    static class TestBeans {
         @Bean
         @Primary
         Clock fixedClock() {
             return Clock.fixed(NOW, ZoneOffset.UTC);
         }
+
+        /** Tokens in these tests are signed with a key pair made for this test run. */
+        @Bean
+        JwtDecoder jwtDecoder() {
+            return NimbusJwtDecoder.withPublicKey((RSAPublicKey) KEYS.getPublic()).build();
+        }
     }
+
+    static String token(String email, String... roles) {
+        try {
+            JWTClaimsSet claims = new JWTClaimsSet.Builder().subject(email).claim("email", email)
+                    .claim("roles", List.of(roles)).expirationTime(new Date(System.currentTimeMillis() + 600_000)).build();
+            SignedJWT jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.RS256), claims);
+            jwt.sign(new RSASSASigner((RSAPrivateKey) KEYS.getPrivate()));
+            return jwt.serialize();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    static final String ADMIN = token("desk@example.com", "ADMIN");
+    static final String ANA = token("ana@example.com");
+    static final String BEN = token("ben@example.com");
+    static final String REMINDER = token("reminder@service", "REMINDER_SERVICE");
 
     @DynamicPropertySource
     static void mongo(DynamicPropertyRegistry r) {
@@ -70,7 +118,12 @@ class LoanApiTest {
     record Resp(int status, JsonNode body) {}
 
     Resp call(String method, String path, String json) throws Exception {
+        return call(method, path, json, ADMIN);
+    }
+
+    Resp call(String method, String path, String json, String token) throws Exception {
         var b = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path)).header("Content-Type", "application/json");
+        if (token != null) b = b.header("Authorization", "Bearer " + token);
         b = json == null ? b.method(method, HttpRequest.BodyPublishers.noBody())
                 : b.method(method, HttpRequest.BodyPublishers.ofString(json));
         HttpResponse<String> r = HTTP.send(b.build(), HttpResponse.BodyHandlers.ofString());
@@ -84,12 +137,12 @@ class LoanApiTest {
         return r.body().get("id").asString();
     }
 
-    static String booking(String who, String start, String end) {
-        return "{\"borrower\":\"" + who + "\",\"start\":\"" + start + "\",\"end\":\"" + end + "\"}";
+    static String booking(String start, String end) {
+        return "{\"start\":\"" + start + "\",\"end\":\"" + end + "\"}";
     }
 
     Resp reserve(String id, String start, String end) throws Exception {
-        return call("POST", "/api/devices/" + id + "/reservations", booking("ana@example.com", start, end));
+        return call("POST", "/api/devices/" + id + "/reservations", booking(start, end), ANA);
     }
 
     // ------------------------------------------------------------------ tests
@@ -112,7 +165,7 @@ class LoanApiTest {
         Resp first = reserve(id, "2027-06-16T09:00:00Z", "2027-06-17T09:00:00Z");
         assertThat(reserve(id, "2027-06-16T20:00:00Z", "2027-06-18T09:00:00Z").status()).isEqualTo(409);
         assertThat(reserve(id, "2027-06-17T09:00:00Z", "2027-06-18T09:00:00Z").status()).isEqualTo(201);  // adjacent
-        call("DELETE", "/api/devices/" + id + "/reservations/" + first.body().get("id").asString(), null);
+        call("DELETE", "/api/devices/" + id + "/reservations/" + first.body().get("id").asString(), null, ANA);
         assertThat(reserve(id, "2027-06-16T10:00:00Z", "2027-06-16T12:00:00Z").status()).isEqualTo(201);  // freed
     }
 
@@ -122,8 +175,6 @@ class LoanApiTest {
         assertThat(reserve(id, "2027-06-18T09:00:00Z", "2027-06-17T09:00:00Z").status()).isEqualTo(400);
         assertThat(reserve(id, "2027-06-16T09:00:00Z", "2027-07-16T09:00:00Z").status()).isEqualTo(400);  // > 14 days
         assertThat(reserve(id, "2027-06-01T09:00:00Z", "2027-06-02T09:00:00Z").status()).isEqualTo(400);  // ended
-        assertThat(call("POST", "/api/devices/" + id + "/reservations",
-                booking("not-an-email", "2027-06-16T09:00:00Z", "2027-06-17T09:00:00Z")).status()).isEqualTo(400);
         assertThat(reserve("nope", "2027-06-16T09:00:00Z", "2027-06-17T09:00:00Z").status()).isEqualTo(404);
         assertThat(call("POST", "/api/devices",
                 "{\"assetTag\":\"DK-003\",\"name\":\"x\",\"kind\":\"CONSOLE\",\"location\":\"x\"}").status()).isEqualTo(409);
@@ -136,7 +187,7 @@ class LoanApiTest {
         assertThat(call("POST", "/api/devices/" + id + "/reservations/" + rid + "/return", null).status()).isEqualTo(409);
         call("POST", "/api/devices/" + id + "/reservations/" + rid + "/checkout", null);
         assertThat(call("POST", "/api/devices/" + id + "/reservations/" + rid + "/checkout", null).status()).isEqualTo(409);
-        assertThat(call("DELETE", "/api/devices/" + id + "/reservations/" + rid, null).status()).isEqualTo(409);
+        assertThat(call("DELETE", "/api/devices/" + id + "/reservations/" + rid, null, ANA).status()).isEqualTo(409);
     }
 
     @Test
@@ -144,7 +195,7 @@ class LoanApiTest {
         String busy = device("DK-005");
         String free = device("DK-006");
         reserve(busy, "2027-06-20T09:00:00Z", "2027-06-22T09:00:00Z");
-        Resp r = call("GET", "/api/devices?from=2027-06-21T00:00:00Z&to=2027-06-21T12:00:00Z", null);
+        Resp r = call("GET", "/api/devices?from=2027-06-21T00:00:00Z&to=2027-06-21T12:00:00Z", null, ANA);
         List<String> ids = new ArrayList<>();
         r.body().forEach(n -> ids.add(n.get("id").asString()));
         assertThat(ids).containsExactly(free);
@@ -176,7 +227,7 @@ class LoanApiTest {
             results.add(pool.submit(() -> {
                 go.await();
                 return call("POST", "/api/devices/" + id + "/reservations",
-                        booking("user" + k + "@example.com", "2027-07-01T09:00:00Z", "2027-07-02T09:00:00Z")).status();
+                        booking("2027-07-01T09:00:00Z", "2027-07-02T09:00:00Z"), token("user" + k + "@example.com")).status();
             }));
         }
         go.countDown();
@@ -192,9 +243,10 @@ class LoanApiTest {
         assertThat(conflicts).isEqualTo(n - 1);
         assertThat(stored).isEqualTo(1);
 
-        int naive = naiveDoubleBookings(n);
+        List<Integer> naive = new ArrayList<>();
+        for (int trial = 0; trial < 5; trial++) naive.add(naiveDoubleBookings(n, "naive-" + trial));
         String out = "{\n  \"concurrent_requests\": " + n + ",\n  \"atomic_conditional_update\": {\"bookings_created\": "
-                + created + ", \"conflicts\": " + conflicts + "},\n  \"naive_read_then_write\": {\"bookings_created\": "
+                + created + ", \"conflicts\": " + conflicts + "},\n  \"naive_read_then_write\": {\"bookings_created_per_trial\": "
                 + naive + "}\n}\n";
         Path resultsDir = Path.of("..", "results");
         Files.createDirectories(resultsDir);
@@ -202,9 +254,66 @@ class LoanApiTest {
         System.out.println("concurrency: atomic=" + created + " naive=" + naive);
     }
 
+    // ------------------------------------------------------------------ security
+    @Test
+    void requests_without_a_valid_token_are_rejected() throws Exception {
+        assertThat(call("GET", "/api/devices", null, null).status()).isEqualTo(401);
+        assertThat(call("GET", "/api/devices", null, "not.a.jwt").status()).isEqualTo(401);
+        assertThat(call("GET", "/actuator/health", null, null).status()).isEqualTo(200);
+    }
+
+    @Test
+    void only_the_it_desk_creates_devices_and_hands_them_out() throws Exception {
+        assertThat(call("POST", "/api/devices",
+                "{\"assetTag\":\"X-1\",\"name\":\"x\",\"kind\":\"CONSOLE\",\"location\":\"x\"}", ANA).status()).isEqualTo(403);
+        String id = device("DK-200");
+        String rid = reserve(id, "2027-06-16T09:00:00Z", "2027-06-17T09:00:00Z").body().get("id").asString();
+        assertThat(call("POST", "/api/devices/" + id + "/reservations/" + rid + "/checkout", null, ANA).status()).isEqualTo(403);
+        assertThat(call("POST", "/api/devices/" + id + "/reservations/" + rid + "/checkout", null, ADMIN).status()).isEqualTo(200);
+    }
+
+    @Test
+    void borrowers_can_cancel_only_their_own_bookings() throws Exception {
+        String id = device("DK-201");
+        String rid = reserve(id, "2027-06-16T09:00:00Z", "2027-06-17T09:00:00Z").body().get("id").asString();
+        assertThat(call("DELETE", "/api/devices/" + id + "/reservations/" + rid, null, BEN).status()).isEqualTo(403);
+        assertThat(call("DELETE", "/api/devices/" + id + "/reservations/" + rid, null, ANA).status()).isEqualTo(200);
+    }
+
+    @Test
+    void the_borrower_is_the_caller_not_whatever_the_body_says() throws Exception {
+        String id = device("DK-202");
+        Resp r = call("POST", "/api/devices/" + id + "/reservations",
+                "{\"borrower\":\"ben@example.com\",\"start\":\"2027-06-16T09:00:00Z\",\"end\":\"2027-06-17T09:00:00Z\"}", ANA);
+        assertThat(r.status()).isEqualTo(201);
+        assertThat(r.body().get("borrower").asString()).isEqualTo("ana@example.com");
+    }
+
+    @Test
+    void listings_hide_other_peoples_emails() throws Exception {
+        String id = device("DK-203");
+        reserve(id, "2027-06-16T09:00:00Z", "2027-06-17T09:00:00Z");
+        JsonNode asBen = call("GET", "/api/devices/" + id, null, BEN).body().get("reservations").get(0);
+        assertThat(asBen.get("borrower").isNull()).isTrue();
+        assertThat(asBen.get("id").isNull()).isTrue();
+        assertThat(asBen.get("mine").asBoolean()).isFalse();
+        JsonNode asAna = call("GET", "/api/devices/" + id, null, ANA).body().get("reservations").get(0);
+        assertThat(asAna.get("borrower").asString()).isEqualTo("ana@example.com");
+        assertThat(asAna.get("mine").asBoolean()).isTrue();
+        JsonNode asDesk = call("GET", "/api/devices/" + id, null, ADMIN).body().get("reservations").get(0);
+        assertThat(asDesk.get("borrower").asString()).isEqualTo("ana@example.com");
+    }
+
+    @Test
+    void overdue_report_is_for_the_it_desk_and_the_reminder_service_only() throws Exception {
+        assertThat(call("GET", "/api/reservations/overdue", null, ANA).status()).isEqualTo(403);
+        assertThat(call("GET", "/api/reservations/overdue", null, REMINDER).status()).isEqualTo(200);
+        assertThat(call("GET", "/api/reservations/overdue", null, ADMIN).status()).isEqualTo(200);
+    }
+
     /** The bug the atomic update prevents: read the device, check for overlaps in code, then write. */
-    int naiveDoubleBookings(int n) throws Exception {
-        mongo.insert(new Device("naive", "DK-NAIVE", "naive", Device.Kind.CONSOLE, "x", false, null));
+    int naiveDoubleBookings(int n, String deviceId) throws Exception {
+        mongo.insert(new Device(deviceId, "DK-" + deviceId, "naive", Device.Kind.CONSOLE, "x", false, null));
         var pool = Executors.newFixedThreadPool(n);
         var go = new CountDownLatch(1);
         Instant s = Instant.parse("2027-07-01T09:00:00Z"), e = Instant.parse("2027-07-02T09:00:00Z");
@@ -212,12 +321,12 @@ class LoanApiTest {
         for (int i = 0; i < n; i++) {
             fs.add(pool.submit(() -> {
                 go.await();
-                Device d = mongo.findById("naive", Device.class);
+                Device d = mongo.findById(deviceId, Device.class);
                 boolean free = d.reservations().stream().noneMatch(r -> r.active() && r.overlaps(s, e));
                 if (free) {
                     Reservation r = new Reservation(UUID.randomUUID().toString(), "x@example.com", s, e,
                             Reservation.State.BOOKED, null, null);
-                    mongo.updateFirst(Query.query(org.springframework.data.mongodb.core.query.Criteria.where("_id").is("naive")),
+                    mongo.updateFirst(Query.query(org.springframework.data.mongodb.core.query.Criteria.where("_id").is(deviceId)),
                             new Update().push("reservations", r), Device.class);
                 }
                 return null;
@@ -226,6 +335,6 @@ class LoanApiTest {
         go.countDown();
         for (Future<?> f : fs) f.get();
         pool.shutdown();
-        return mongo.findById("naive", Device.class).reservations().size();
+        return mongo.findById(deviceId, Device.class).reservations().size();
     }
 }

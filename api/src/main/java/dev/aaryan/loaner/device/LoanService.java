@@ -73,7 +73,12 @@ public class LoanService {
         return transition(deviceId, reservationId, State.CHECKED_OUT, State.RETURNED, "returnedAt");
     }
 
-    public Reservation cancel(String deviceId, String reservationId) {
+    /** Borrowers may cancel only their own bookings; the IT desk may cancel any. */
+    public Reservation cancel(String deviceId, String reservationId, dev.aaryan.loaner.security.Caller caller) {
+        Reservation r = find(get(deviceId), reservationId);
+        if (!caller.admin() && !r.borrower().equalsIgnoreCase(caller.email())) {
+            throw new Forbidden("you can only cancel your own bookings");
+        }
         return transition(deviceId, reservationId, State.BOOKED, State.CANCELLED, null);
     }
 
@@ -123,4 +128,5 @@ public class LoanService {
     public static class NotFound extends RuntimeException { NotFound(String m) { super(m + " not found"); } }
     public static class Conflict extends RuntimeException { Conflict(String m) { super(m); } }
     public static class BadRequest extends RuntimeException { BadRequest(String m) { super(m); } }
+    public static class Forbidden extends RuntimeException { Forbidden(String m) { super(m); } }
 }

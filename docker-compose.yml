@@ -11,6 +11,10 @@ services:
     build: ./api
     environment:
       MONGODB_URI: mongodb://mongo:27017/loaner
+      SPRING_PROFILES_ACTIVE: local
+      JWT_PUBLIC_KEY_FILE: /keys/public.pem
+    volumes:
+      - ./.dev-keys/public.pem:/keys/public.pem:ro     # run scripts/dev-keys.sh first
     ports: ["8080:8080"]
     healthcheck:
       # no curl in the JRE image: talk HTTP over bash's /dev/tcp

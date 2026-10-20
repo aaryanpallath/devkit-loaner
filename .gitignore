@@ -6,3 +6,4 @@ infra/node_modules/
 infra/cdk.out/
 lambda/**/__pycache__/
 .pytest_cache/
+.dev-keys/

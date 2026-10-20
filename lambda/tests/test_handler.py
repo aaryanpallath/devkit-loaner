@@ -23,20 +23,28 @@ def test_one_reminder_per_borrower_most_overdue_first():
 
 def test_handler_calls_the_api_and_sends(monkeypatch):
     monkeypatch.setenv("API_URL", "http://api.internal/")
-    seen_urls, sent = [], []
+    seen, sent = [], []
 
-    def opener(url, timeout):
-        seen_urls.append(url)
+    def opener(req, timeout):
+        seen.append((req.full_url, req.get_header("Authorization")))
         return io.BytesIO(json.dumps(OVERDUE).encode())
 
-    assert handler({}, None, opener=opener, send=sent.append) == {"reminders": 2, "escalations": 1}
-    assert seen_urls == ["http://api.internal/api/reservations/overdue"]
+    result = handler({}, None, opener=opener, send=sent.append, token=lambda: "svc-token")
+    assert result == {"reminders": 2, "escalations": 1}
+    assert seen == [("http://api.internal/api/reservations/overdue", "Bearer svc-token")]
     assert len(sent) == 2
 
 
 def test_nothing_overdue_sends_nothing(monkeypatch):
     monkeypatch.setenv("API_URL", "http://api.internal")
     sent = []
-    assert handler({}, None, opener=lambda u, timeout: io.BytesIO(b"[]"), send=sent.append) == \
-        {"reminders": 0, "escalations": 0}
+    assert handler({}, None, opener=lambda r, timeout: io.BytesIO(b"[]"), send=sent.append,
+                   token=lambda: "t") == {"reminders": 0, "escalations": 0}
     assert sent == []
+
+
+def test_local_token_comes_from_the_environment(monkeypatch):
+    from overdue_reminder.handler import service_token
+
+    monkeypatch.setenv("API_TOKEN", "local-token")
+    assert service_token() == "local-token"

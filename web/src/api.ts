@@ -9,13 +9,23 @@ export interface Reservation {
   state: State
 }
 
+/** A booking as the API shows it to the caller: other people's bookings come back as anonymous time slots. */
+export interface Slot {
+  id: string | null
+  start: string
+  end: string
+  state: State
+  mine: boolean
+  borrower: string | null
+}
+
 export interface Device {
   id: string
   assetTag: string
   name: string
   kind: Kind
   location: string
-  reservations: Reservation[]
+  reservations: Slot[]
 }
 
 export interface Overdue {
@@ -36,8 +46,20 @@ export class ApiError extends Error {
   }
 }
 
+const TOKEN_KEY = 'loaner.token'
+
+/** In production this token comes from the company SSO sign-in; in development it is pasted from scripts/dev-token.sh. */
+export const auth = {
+  get: () => sessionStorage.getItem(TOKEN_KEY),
+  set: (t: string) => sessionStorage.setItem(TOKEN_KEY, t.trim()),
+  clear: () => sessionStorage.removeItem(TOKEN_KEY),
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...init })
+  const token = auth.get()
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (token) headers.Authorization = `Bearer ${token}`
+  const res = await fetch(path, { ...init, headers })
   const body = res.status === 204 ? null : await res.json()
   if (!res.ok) throw new ApiError(res.status, body?.detail ?? `Request failed (${res.status})`)
   return body as T
@@ -53,10 +75,10 @@ export const api = {
     }
     return request<Device[]>(`/api/devices?${q}`)
   },
-  reserve(deviceId: string, borrower: string, start: string, end: string) {
+  reserve(deviceId: string, start: string, end: string) {
     return request<Reservation>(`/api/devices/${deviceId}/reservations`, {
       method: 'POST',
-      body: JSON.stringify({ borrower, start, end }),
+      body: JSON.stringify({ start, end }),
     })
   },
   overdue() {

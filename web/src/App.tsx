@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, ApiError, type Device, type Kind, type Overdue } from './api'
+import { api, ApiError, auth, type Device, type Kind, type Overdue } from './api'
 import './index.css'
 
 const KINDS: Kind[] = ['DEV_KIT', 'CONSOLE', 'HANDHELD', 'ACCESSORY']
@@ -13,26 +13,42 @@ export default function App() {
   const [devices, setDevices] = useState<Device[]>([])
   const [overdue, setOverdue] = useState<Overdue[]>([])
   const [error, setError] = useState('')
+  const [signedIn, setSignedIn] = useState(Boolean(auth.get()))
+  const [isDesk, setIsDesk] = useState(false)
 
   const load = useCallback(async () => {
+    if (!signedIn) return
     try {
       setError('')
       setDevices(await api.devices(kind || undefined, toIso(from), toIso(to)))
-      setOverdue(await api.overdue())
     } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        auth.clear()
+        setSignedIn(false)
+        return
+      }
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [kind, from, to])
+    try {
+      setOverdue(await api.overdue())     // IT desk only; borrowers get 403 and the panel stays hidden
+      setIsDesk(true)
+    } catch {
+      setIsDesk(false)
+    }
+  }, [kind, from, to, signedIn])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  if (!signedIn) return <SignIn onSignedIn={() => setSignedIn(true)} />
 
   return (
     <main>
       <header>
         <h1>Dev Kit Loaner</h1>
         <p>Reserve dev kits and test hardware. Bookings never overlap.</p>
+        <button type="button" className="link" onClick={() => { auth.clear(); setSignedIn(false) }}>Sign out</button>
       </header>
 
       <section className="filters" aria-label="Filters">
@@ -64,7 +80,7 @@ export default function App() {
         ))}
       </section>
 
-      <section aria-label="Overdue loans">
+      {isDesk && <section aria-label="Overdue loans">
         <h2>Overdue loans</h2>
         {overdue.length === 0 ? (
           <p>Nothing overdue.</p>
@@ -85,22 +101,36 @@ export default function App() {
             </tbody>
           </table>
         )}
-      </section>
+      </section>}
+    </main>
+  )
+}
+
+function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
+  const [token, setToken] = useState('')
+  return (
+    <main>
+      <h1>Dev Kit Loaner</h1>
+      <p>Sign in with your company account. In local development, paste a token from <code>scripts/dev-token.sh</code>.</p>
+      <form onSubmit={(e) => { e.preventDefault(); auth.set(token); onSignedIn() }} aria-label="Sign in">
+        <textarea aria-label="Token" rows={4} value={token} onChange={(e) => setToken(e.target.value)} required />
+        <button type="submit">Sign in</button>
+      </form>
     </main>
   )
 }
 
 function DeviceCard({ device, onBooked }: { device: Device; onBooked: () => void }) {
-  const [borrower, setBorrower] = useState('')
   const [start, setStart] = useState('')
   const [end, setEnd] = useState('')
   const [message, setMessage] = useState('')
-  const active = device.reservations.filter((r) => r.state === 'BOOKED' || r.state === 'CHECKED_OUT')
+  const active = device.reservations
+  const mine = active.filter((r) => r.mine).length
 
   async function book(e: React.FormEvent) {
     e.preventDefault()
     try {
-      await api.reserve(device.id, borrower, toIso(start), toIso(end))
+      await api.reserve(device.id, toIso(start), toIso(end))
       setMessage('Booked.')
       onBooked()
     } catch (err) {
@@ -113,10 +143,10 @@ function DeviceCard({ device, onBooked }: { device: Device; onBooked: () => void
     <article className="card">
       <h3>{device.name}</h3>
       <p className="meta">{device.assetTag} · {label(device.kind)} · {device.location}</p>
-      <p className="meta">{active.length} upcoming booking{active.length === 1 ? '' : 's'}</p>
+      <p className="meta">
+        {active.length} upcoming booking{active.length === 1 ? '' : 's'}{mine > 0 && ` (${mine} yours)`}
+      </p>
       <form onSubmit={book} aria-label={`Book ${device.assetTag}`}>
-        <input aria-label="Email" type="email" placeholder="you@example.com" required value={borrower}
-          onChange={(e) => setBorrower(e.target.value)} />
         <input aria-label="Start" type="datetime-local" required value={start} onChange={(e) => setStart(e.target.value)} />
         <input aria-label="End" type="datetime-local" required value={end} onChange={(e) => setEnd(e.target.value)} />
         <button type="submit">Book</button>
