@@ -77,7 +77,7 @@ public class LoanService {
     /** Borrowers may cancel only their own bookings; the IT desk may cancel any. */
     public Reservation cancel(String deviceId, String reservationId, dev.aaryan.loaner.security.Caller caller) {
         Reservation r = find(get(deviceId), reservationId);
-        if (!caller.admin() && !r.borrowerId().equals(caller.subject())) {
+        if (!caller.admin() && !caller.subject().equals(r.borrowerId())) {   // legacy bookings: IT desk only
             throw new Forbidden("you can only cancel your own bookings");
         }
         return transition(deviceId, reservationId, State.BOOKED, State.CANCELLED, null);

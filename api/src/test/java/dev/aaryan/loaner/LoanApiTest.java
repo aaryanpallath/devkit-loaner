@@ -299,6 +299,20 @@ class LoanApiTest {
     }
 
     @Test
+    void bookings_without_an_owner_id_are_desk_managed_and_never_matched_by_email() throws Exception {
+        String id = device("DK-205");
+        Reservation legacy = new Reservation("legacy-1", null, "ana@example.com", NOW.plusSeconds(86400),
+                NOW.plusSeconds(2 * 86400), Reservation.State.BOOKED, null, null);
+        mongo.updateFirst(Query.query(org.springframework.data.mongodb.core.query.Criteria.where("_id").is(id)),
+                new Update().push("reservations", legacy), Device.class);
+        Resp listing = call("GET", "/api/devices/" + id, null, ANA);
+        assertThat(listing.status()).isEqualTo(200);
+        assertThat(listing.body().get("reservations").get(0).get("mine").asBoolean()).isFalse();
+        assertThat(call("DELETE", "/api/devices/" + id + "/reservations/legacy-1", null, ANA).status()).isEqualTo(403);
+        assertThat(call("DELETE", "/api/devices/" + id + "/reservations/legacy-1", null, ADMIN).status()).isEqualTo(200);
+    }
+
+    @Test
     void only_the_it_desk_creates_devices_and_hands_them_out() throws Exception {
         assertThat(call("POST", "/api/devices",
                 "{\"assetTag\":\"X-1\",\"name\":\"x\",\"kind\":\"CONSOLE\",\"location\":\"x\"}", ANA).status()).isEqualTo(403);
